@@ -4,7 +4,7 @@
 
 ### **Overview**
 
-ip-hacker is an advanced OSINT tool tailored for Discord, enabling cyber investigators, security researchers, and enthusiasts to gather in-depth data on target IP addresses. By integrating a broad spectrum of utilities into one platform, this bot provides real-time insights into an IP's geolocation, associated services, potential security threats, and more. Its foundation lies in its ability to seamlessly interact with the user, combining convenience and data-driven decision-making into one unified experience.
+ip-hacker is an advanced OSINT tool tailored for Discord, enabling cyber investigators, security researchers, and enthusiasts to gather in-depth data on target IP addresses. By integrating a broad spectrum of utilities into one platform, this bot provides real-time insights into an IP's geolocation, associated services, potential security threats, and more. Its foundation lies in its ability to seamlessly interact with the user, combining convenience and data-driven decision-making into one unified experience. Provide data from many sources and even provides links to possible open ports to help further your investigation.
 
 ---
 
