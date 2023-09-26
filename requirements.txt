@@ -1,0 +1,5 @@
+discord
+aiohttp
+shodan
+whois
+python-nmap
