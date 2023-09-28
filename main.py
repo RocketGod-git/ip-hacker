@@ -565,7 +565,7 @@ def run_discord_bot(token, shodan_api_key, virustotal_api_key):
                 print(f"[ERROR] Error fetching geolocation data: {e}")
 
             if service_links:
-                info.append("\n**## Open services:**")
+                info.append("\n**## Possible open services:**")
                 for link in service_links:
                     # Extract service name and URL
                     match = re.search(r'\[(.+?)\]\((.+?)\)', link)
