@@ -52,7 +52,7 @@ class AClient(discord.Client):
         self.shodan_key = shodan_api_key
         self.virustotal_key = virustotal_api_key
         self.tree = discord.app_commands.CommandTree(self)
-        self.activity = discord.Activity(type=discord.ActivityType.watching, name="IP Addresses")
+        self.activity = discord.Activity(type=discord.ActivityType.watching, name="/ip")
         self.discord_message_limit = 2000
         self.rate_limiter = asyncio.Semaphore(5)
 
