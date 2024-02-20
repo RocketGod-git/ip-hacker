@@ -9,6 +9,7 @@
 #
 # https://github.com/RocketGod-git/ip-hacker
 
+
 import json
 import logging
 import discord
@@ -18,9 +19,13 @@ from shodan import Shodan, APIError as ShodanAPIError
 import whois
 import nmap
 from datetime import datetime
-import asyncio
 from concurrent.futures import ThreadPoolExecutor
 import re
+import time
+import traceback
+import base64
+from io import BytesIO
+
 
 executor = ThreadPoolExecutor()
 
@@ -46,13 +51,27 @@ def check_configurations(config):
 
     return True
 
+def is_valid_ipv4(ip):
+    pattern = r'^((25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$'
+    return re.match(pattern, ip) is not None
+
+def is_valid_ipv6(ip):
+    pattern = r'^\s*((([0-9A-Fa-f]{1,4}:){7}([0-9A-Fa-f]{1,4}|:))|(([0-9A-Fa-f]{1,4}:){6}(:[0-9A-Fa-f]{1,4}|((25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])(\.(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])){3})|:))|(([0-9A-Fa-f]{1,4}:){5}(((:[0-9A-Fa-f]{1,4}){1,2})|:((25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])(\.(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])){3})|:))|(([0-9A-Fa-f]{1,4}:){4}(((:[0-9A-Fa-f]{1,4}){1,3})|((:[0-9A-Fa-f]{1,4})?:((25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])(\.(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])){3}))|:))|(([0-9A-Fa-f]{1,4}:){3}(((:[0-9A-Fa-f]{1,4}){1,4})|((:[0-9A-Fa-f]{1,4}){0,2}:((25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])(\.(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])){3}))|:))|(([0-9A-Fa-f]{1,4}:){2}(((:[0-9A-Fa-f]{1,4}){1,5})|((:[0-9A-Fa-f]{1,4}){0,3}:((25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])(\.(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])){3}))|:))|(([0-9A-Fa-f]{1,4}:){1}(((:[0-9A-Fa-f]{1,4}){1,6})|((:[0-9A-Fa-f]{1,4}){0,4}:((25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])(\.(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])){3}))|:))|(:(((:[0-9A-Fa-f]{1,4}){1,7})|((:[0-9A-Fa-f]{1,4}){0,5}:((25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])(\.(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])){3}))|:)))(%.+)?\s*$'
+    return re.match(pattern, ip) is not None
+
+def validate_ip(ip):
+    if is_valid_ipv4(ip) or is_valid_ipv6(ip):
+        return True
+    else:
+        return False
+
 class AClient(discord.Client):
     def __init__(self, shodan_api_key, virustotal_api_key):
         super().__init__(intents=discord.Intents.default())
         self.shodan_key = shodan_api_key
         self.virustotal_key = virustotal_api_key
         self.tree = discord.app_commands.CommandTree(self)
-        self.activity = discord.Activity(type=discord.ActivityType.watching, name="IP Addresses")
+        self.activity = discord.Activity(type=discord.ActivityType.watching, name="/ip")
         self.discord_message_limit = 2000
         self.rate_limiter = asyncio.Semaphore(5)
 
@@ -61,10 +80,65 @@ class AClient(discord.Client):
         async with session.get(url) as response:
             return await response.text()
         
-    async def async_nmap_scan(self, nm, ip, ports, arguments):
-        loop = asyncio.get_event_loop()
-        result = await loop.run_in_executor(executor, nm.scan, ip, ports, arguments)
-        return result
+    # async def async_nmap_scan(self, nm, ip, ports, arguments):
+    #     loop = asyncio.get_event_loop()
+    #     try:
+    #         result = await loop.run_in_executor(executor, nm.scan, ip, ports, arguments)
+    #         return result, None  # Return the scan result and no error
+    #     except Exception as e:
+    #         error_traceback = traceback.format_exc()
+    #         logging.error(f"Nmap scanning error for IP {ip} with ports '{ports}' and arguments '{arguments}':\n{error_traceback}")
+    #         # Print the full traceback for detailed diagnostics in the terminal
+    #         print(f"Traceback error during Nmap scanning for IP {ip} with ports '{ports}' and arguments '{arguments}':\n{error_traceback}")
+    #         return None, f"An error occurred during Nmap scanning: {str(e)}"
+
+    async def fetch_shodan_host_info(self, ip):
+        SHODAN_API_URL = f"https://api.shodan.io/shodan/host/{ip}"
+        params = {'key': self.shodan_key, 'minify': str(False).lower()}
+        logging.debug(f"Fetching Shodan host information for IP: {ip}")
+
+        async with aiohttp.ClientSession() as session:
+            async with session.get(SHODAN_API_URL, params=params) as response:
+                if response.status == 200:
+                    logging.debug(f"Successfully fetched host information for IP: {ip}")
+                    return await response.json()
+                elif response.status == 404:
+                    logging.info(f"No data found for IP {ip} on Shodan.")
+                    return None
+                else:
+                    response_text = await response.text()
+                    logging.error(f"Shodan API returned a {response.status} status for IP {ip}. Response: {response_text}")
+                    return None
+
+    async def request_shodan_scan(self, ip):
+        logging.debug(f"Requesting Shodan scan for IP: {ip}")
+        async with aiohttp.ClientSession() as session:
+            scan_url = f"https://api.shodan.io/shodan/scan?key={self.shodan_key}"
+            data = {"ips": ip}
+            async with session.post(scan_url, json=data) as response:
+                if response.status == 200:
+                    logging.debug(f"Shodan scan successfully initiated for IP: {ip}")
+                    return await response.json(), False
+                elif response.status == 401:
+                    logging.error(f"Shodan scan limit reached for IP {ip}. Falling back to fetch_shodan_host_info.")
+                    return None, True
+                else:
+                    response_text = await response.text()
+                    logging.error(f"Shodan scan request failed for IP {ip} with status {response.status}. Response: {response_text}")
+                    return None, False
+
+    async def check_shodan_scan_status(self, scan_id):
+        logging.debug(f"Checking Shodan scan status for scan_id: {scan_id}")
+        async with aiohttp.ClientSession() as session:
+            status_url = f"https://api.shodan.io/shodan/scan/{scan_id}?key={self.shodan_key}"
+            async with session.get(status_url) as response:
+                if response.status == 200:
+                    logging.debug(f"Successfully fetched Shodan scan status for scan_id: {scan_id}")
+                    return await response.json()
+                else:
+                    logging.error(f"Failed to fetch Shodan scan status for scan_id {scan_id} with status {response.status}")
+                    return None
+
 
     async def get_virustotal_data(self, ip):
         headers = {'x-apikey': self.virustotal_key}
@@ -228,9 +302,23 @@ class AClient(discord.Client):
     async def get_geolocation(self, ip):
         url = f"https://ipinfo.io/{ip}/json"
         async with aiohttp.ClientSession() as session:
-            response_text = await self.fetch(session, url)
-            data = json.loads(response_text)
-            return data
+            async with session.get(url) as response:
+                if response.status == 200:
+                    response_text = await response.text()
+                    # Check if response_text is not empty
+                    if response_text:
+                        try:
+                            data = json.loads(response_text)
+                            return data
+                        except json.JSONDecodeError:
+                            logging.error(f"Invalid JSON response for IP {ip}: {response_text}")
+                            return None  # or a default geolocation data structure
+                    else:
+                        logging.error(f"Empty response for IP {ip}")
+                        return None  # or a default geolocation data structure
+                else:
+                    logging.error(f"Error fetching geolocation data for IP {ip}: HTTP Status {response.status}")
+                    return None  # or a default geolocation data structure
 
     async def get_tor_exit_nodes(self):
         TOR_EXIT_LIST_URL = "https://check.torproject.org/exit-addresses"
@@ -254,347 +342,453 @@ def run_discord_bot(token, shodan_api_key, virustotal_api_key):
 
     @client.tree.command(name="ip", description="Retrieve comprehensive information about an IP address.")
     async def ip(interaction: discord.Interaction, ip: str):
+        # Validate the IP address here
+        if not validate_ip(ip):
+            await interaction.response.send_message("Invalid IP address provided. Please provide a valid IPv4 or IPv6 address.", ephemeral=True)
+            return  
+        
         await interaction.response.defer(ephemeral=False)
-        status_message = await interaction.followup.send(f'Scanning and analyzing {ip}.\nThis will take a long time. Grab a beer.')
-        current_message = f'Scanning and analyzing {ip}.\nThis will take a long time. Grab a beer.' 
+        status_message = await interaction.followup.send(f'Scanning and analyzing {ip}.\n')
+        current_message = f'Scanning and analyzing {ip}.\n' 
         print(f"[INFO] Received IP lookup request for: {ip}")
+        
+        shodan_data = None
 
         config = load_config()
         info = []
         open_ports = []
 
+        def clean_service_banner(banner):
+            # Remove HTML tags
+            banner_no_html = re.sub(r'<[^>]+>', '', banner)
+            # Remove escape sequences and other unwanted patterns
+            cleaned_banner = re.sub(r'\s+;|\\n|\\r|\\t', ' ', banner_no_html)
+            # Optionally, truncate long strings to keep the output concise
+            if len(cleaned_banner) > 100:
+                return cleaned_banner[:97] + "..."
+            return cleaned_banner
+
+
         info.append('**----------------------------------**')
         info.append(f'**## Report on {ip}**')
         info.append('**----------------------------------**')
             
-        # Shodan
+        # Shodan Analysis
         info.append('\n**## Shodan Analysis**')
         try:
-            api = Shodan(client.shodan_key)
-            results = api.search(ip)  # Using search instead of host
-
-            if results and results.get('matches'):
-                shodan_info = [f"Found {results['total']} results for IP {ip} on Shodan.\nHere are 20:"]
-                
-                # Extracting details for each matching device (limited to top 20 for brevity)
-                for match in results['matches'][:20]:  
-                    device_info = []
-
-                    device_info.append(f"IP: {match['ip_str']}")
-                    if 'os' in match:
-                        device_info.append(f"OS: {match['os']}")
-                    if 'city' in match and 'country_name' in match:
-                        device_info.append(f"Location: {match['city']}, {match['country_name']}")
-
-                    # Services/Banners
-                    if 'port' in match:
-                        service_info = f"Port: {match['port']}, Service: {match.get('product', 'N/A')}"
-                        if 'version' in match:
-                            service_info += f", Version: {match['version']}"
-                        device_info.append(service_info)
-
-                    shodan_info.append(' | '.join(device_info))
-
-                info.append("\n".join(shodan_info))
-                print("[INFO] Completed Shodan search.")
-                current_message += '\n- Shodan search completed successfully.'
-                await status_message.edit(content=current_message)
-            else:
-                info.append(f"No results found for IP {ip} on Shodan.")
-        except ShodanAPIError:
-            info.append("Invalid Shodan API key.")
-            print(f"Invalid Shodan API key.")
-        except Exception as e:
-            info.append(f"Shodan Error: {str(e)}")
-            print(f"[ERROR] ...: {e}")
-            
-            # Tor Exit Node Check
-            info.append('\n**## TOR Exit Node Check**')
-            try:
-                exit_nodes = await client.get_tor_exit_nodes()
-                is_tor = ip in exit_nodes
-                info.append(f"Tor exit node: {'Yes' if is_tor else 'No'}")
-                print("[INFO] TOR check completed.")
-                current_message += '\n- TOR check completed.'
-                await status_message.edit(content=current_message)
-
-            except Exception as e:
-                print(f"Error checking for Tor exit node: {e}") 
-                info.append("Error checking for Tor exit node.") 
-                print(f"[ERROR] ...: {e}")
-
-            # Whois lookup
-            info.append('\n**## Whois Lookup**')
-            try:
-                whois_data = whois.whois(ip)
-                if whois_data:
-                    whois_info = ["Whois data for " + ip + ":"]
-                    for key, value in whois_data.items():
-                        if value and not isinstance(value, (list, dict)):
-                            whois_info.append(f"   {key.capitalize()}: {value}")
-                        elif isinstance(value, list):
-                            # If the value is a list (e.g. multiple name servers), concatenate them
-                            whois_info.append(f"   {key.capitalize()}: {', '.join(map(str, value))}")
-                    info.extend(whois_info)
-                    print("[INFO] WHOIS check completed.")
-                    current_message += '\n- WHOIS check completed.\n- :clock1: Scanning lots of ports now...'
-                    await status_message.edit(content=current_message)
-                else:
-                    info.append(f"No Whois data found for {ip}.")
-                    print(f"No Whois data found for {ip}.")
-            except Exception as e:
-                info.append(f"Whois lookup error for {ip}: {e}")
-                print(f"[ERROR] ...: {e}")
-
-            # Device and OS Detection (using nmap)
-            info.append('\n**## NMAP Data**')
-            nm = nmap.PortScanner()
-
-            # List of interesting ports
-            interesting_ports = [
-                21, 22, 23, 25, 53, 80, 110, 139, 143, 443, 445, 3389, 8080, 8443, 8888, 
-                9100, 9200, 25565, 27015, 86, 888, 10001, 17500, 34567, 5050, 5800, 8090, 554, 
-                8554, 37777
-            ]
-
-            # Filter out ports that are within the 20-80 range
-            filtered_ports = [port for port in interesting_ports if port < 20 or port > 80]
-
-            # Combine the range with the specific ports
-            port_string = "20-80," + ",".join(map(str, filtered_ports))
-
-            try:
-                # Scanning ports along with aggressive scan for OS, version detection, script scans, and traceroute
-                result = await client.async_nmap_scan(nm, ip, port_string, arguments='-A -T4')
-                                
-                # Ports Information
-                open_ports = []
-                for proto in nm[ip].all_protocols():
-                    lport = nm[ip][proto].keys()
-                    open_ports.extend(lport)
-                    for port in lport:
-                        if 'name' in nm[ip][proto][port]:
-                            device = nm[ip][proto][port]['name']
-                            info.append(f"Device on port {port}: {device}")
-
-                # OS and Device Information
-                if 'osclass' in nm[ip]:
-                    os_guess = nm[ip]['osclass']['osfamily']
-                    os_gen = nm[ip]['osclass']['osgen'] if 'osgen' in nm[ip]['osclass'] else ''
-                    device_type = nm[ip]['osclass']['osclass_type'] if 'osclass_type' in nm[ip]['osclass'] else ''
-                    info.append(f"OS guess: {os_guess} {os_gen}")
-                    if device_type:
-                        info.append('**----------------------------------**')
-                        info.append(f"Device type: {device_type}")
-                        info.append('**----------------------------------**')
-                else:
-                    info.append("Failed to determine OS using nmap.")
-                    print("[ERROR] Failed to determine OS using nmap.")
-
-                # Traceroute Information
-                if 'trace' in nm[ip]:
-                    hops = []
-                    for hop in nm[ip]['trace']['hops']:
-                        hops.append(hop['ipaddr'])
-                    info.append('**----------------------------------**')
-                    info.append(f"Traceroute: {' -> '.join(hops)}")
-                    info.append('**----------------------------------**')
-
-            except Exception as e:
-                if "nmap program was not found in path" in str(e):
-                    info.append("Error: Nmap is not installed or not found in the system's PATH.")
-                    print(f"Error: Nmap is not installed or not found in the system's PATH.")
-                else:
-                    info.append(f"Error during device and OS detection using nmap: {str(e)}")
-                    print(f"[ERROR] ...: {e}")
-            
-            print("[INFO] NMAP aggressive scan completed.")
-            current_message += '\n- NMAP aggressive scan completed.'
+            current_message += '\n- Initiating Shodan scan for current open ports.'
             await status_message.edit(content=current_message)
 
-            # Check for common services
-            service_links = []
-
-            ports_and_services = {
-                20: ("FTP Data Transfer", "ftp"),
-                21: ("FTP Control", "ftp"),
-                53: ("DNS", "dns"),
-                67: ("DHCP Server", "dhcp"),
-                68: ("DHCP Client", "dhcp"),
-                80: ("HTTP", "http"),
-                123: ("NTP", "ntp"),
-                389: ("LDAP", "ldap"),
-                443: ("HTTPS", "https"),
-                636: ("LDAPS", "ldaps"),
-                1194: ("OpenVPN", "openvpn"),
-                1723: ("PPTP VPN", "pptp"),
-                1812: ("RADIUS Authentication", "radius"),
-                1813: ("RADIUS Accounting", "radius"),
-                1883: ("MQTT (non-SSL)", "mqtt"),
-                8883: ("MQTT (SSL)", "mqtts"),
-                2049: ("NFS", "nfs"),
-                3260: ("iSCSI", "iscsi"),
-                3268: ("Microsoft Global Catalog", "gc"),
-                5060: ("SIP Non-encrypted", "sip"),
-                5061: ("SIP Encrypted (TLS)", "sips"),
-                5000: ("UPnP", "upnp"),
-                11211: ("Memcached", "memcached"),
-                27015: ("Online Gaming (e.g., Valve's Source Engine)", "game"),
-                9418: ("Git", "git"),
-                10000: ("Webmin", "webmin"),
-                # IP Cameras
-                554: ("RTSP for IP cameras", "rtsp"),
-                8554: ("RTSP alternate", "rtsp"),
-                37777: ("Dahua DVR", "dahua"),
-                86: ("Wyze Camera", "http"),
-                888: ("WebcamXP", "http"),
-                8080: ("WebcamXP 5", "http"),
-                10001: ("Yawcam", "http"),
-                17500: ("Dropcam", "http"),
-                34567: ("Hikvision DVR", "hikvision"),
-                5050: ("Mobotix IP Camera", "mobotix"),
-                5800: ("Vivotek Cameras", "vivotek"),
-                8090: ("Apix Cameras", "http"),
-                # Printers
-                515: ("Line Printer Daemon (LPD)", "lpd"),
-                631: ("Internet Printing Protocol (IPP)", "ipp"),
-                9100: ("Raw printing (JetDirect, AppSocket, PDL-datastream)", "jetdirect"),
-                # Game Servers
-                25565: ("Minecraft", "minecraft"),
-                27017: ("MongoDB", "mongodb")
-            }
-
-            # Generate service links based on detected open ports
-            default_label = "Unknown Service"
-            default_protocol = "unknown"
-
-            for port, values in ports_and_services.items():
-                label = values[0] if len(values) > 0 and values[0] else default_label
-                protocol = values[1] if len(values) > 1 and values[1] else default_protocol
-                
-                # Append the port to the URL if it's not a standard port for the given protocol
-                port_str = f":{port}" if (protocol != "http" or port != 80) and (protocol != "https" or port != 443) else ""
-
-                if port in open_ports:
-                    service_links.append(f"[{label}]({protocol}://{ip}{port_str})")
-
-            # VirusTotal
-            info.append('\n**## VirusTotal Analysis**')
-            try:
-                processed_data = await client.get_virustotal_data(ip)
-
-                # Extracting IP Info
-                ip_info = processed_data.get("ip_info", {})
-                if ip_info:
-                    info.append("**IP Info:**")
-                    for key, value in ip_info.items():
-                        if key == "last_analysis_results":
-                            continue  
-                        if isinstance(value, dict):
-                            value = ', '.join(f"{k}: {v}" for k, v in value.items())
-                        info.append(f"{key.capitalize()}: {value}")
-
-                # Extracting WHOIS data
-                info.append('**----------------------------------**')
-                info.append('**Historical WHOIS Data**')
-                info.append('**----------------------------------**')
-                whois_info = processed_data.get("whois_info", [])
-                if whois_info:
-                    for entry in whois_info:
-                        attributes = entry.get("attributes", {})
-                        for key, value in attributes.items():
-                            if isinstance(value, dict):  # If the value is another dictionary
-                                nested_info = [f"\t{k.capitalize()}: {v}" for k, v in value.items()]
-                                info.append(f"{key.capitalize()}:")
-                                info.extend(nested_info)
-                            else:
-                                info.append(f"{key.capitalize()}: {value}")
-
-                # Extracting URLs data
-                urls_info = processed_data.get("urls_info", [])
-                if urls_info:
-                    info.append('**----------------------------------**')
-                    info.append("**URLs associated:**")
-                    info.append('**----------------------------------**')
-                    for entry in urls_info:
-                        for key, value in entry.get("attributes", {}).items():
-                            info.append(f"{key.capitalize()}: {value}")
-
-                # Extracting Comments data
-                comments_info = processed_data.get("comments_info", [])
-                if comments_info:
-                    info.append('**----------------------------------**')
-                    info.append("**Community Comments:**")
-                    info.append('**----------------------------------**')
-                    for comment in comments_info:
-                        for key, value in comment.items():
-                            info.append(f"{key.capitalize()}: {value}")
-
-                # Extracting Last Analysis Results 
-                last_analysis = processed_data.get("last_analysis_results", {})
-                if last_analysis:
-                    info.append('**----------------------------------**')
-                    info.append("**Last Analysis Results:**")
-                    info.append('**----------------------------------**')
-                    for engine, details in last_analysis.items():
-                        engine_name = details.get('engine_name', 'Unknown Engine')
-                        category = details.get('category', 'Unknown Category')
-                        result = details.get('result', 'Unknown Result')
-                        info.append(f"{engine_name} - Category: {category}, Result: {result}")
-
-                print("[INFO] Virustotal scan completed.")
-                current_message += '\n- Virustotal scan completed.'
+            # Request an on-demand Shodan scan for the IP address
+            scan_result = await client.request_shodan_scan(ip)
+            if scan_result and 'id' in scan_result:
+                scan_id = scan_result['id']
+                current_message += f'\n- Shodan scan initiated. Scan ID: {scan_id}. Waiting for scan to complete...'
                 await status_message.edit(content=current_message)
 
-            except Exception as e:
-                print(f"VirusTotal API Error: {e}")
-
-            # Geolocation
-            info.append('\n**## Geolocation**')
-            try:
-                data = await client.get_geolocation(ip)
-                location = f"{data.get('city', 'Unknown')}, {data.get('region', 'Unknown')}, {data.get('country', 'Unknown')}"
-                google_maps_link = f"https://www.google.com/maps/search/?api=1&query={data.get('loc', '0,0')}"
-                print(data)
-                info.append(f"**[View on Google Maps: {location}]({google_maps_link})**")
-                print("[INFO] Sent geolocation.")
-                current_message += '\n- Geolocation data retrieved.'
-                await status_message.edit(content=current_message)                
-            except Exception as e:
-                info.append(f"Error fetching geolocation data: {e}")
-                print(f"[ERROR] Error fetching geolocation data: {e}")
-
-            if service_links:
-                info.append("\n**## Possible open services:**")
-                for link in service_links:
-                    # Extract service name and URL
-                    match = re.search(r'\[(.+?)\]\((.+?)\)', link)
-                    if match:
-                        service_name, service_url = match.groups()
-                        info.append(f"- {service_name}: <{service_url}>")
+                # Poll for Shodan scan completion
+                scan_completed = False
+                while not scan_completed:
+                    scan_status = await client.check_shodan_scan_status(scan_id)
+                    if scan_status:
+                        if scan_status.get('status') == 'DONE':
+                            scan_completed = True
+                            current_message += '\n- Shodan scan completed. Fetching updated information...'
+                        elif 'error' in scan_status:  # Assuming 'error' key indicates a problem
+                            current_message += '\n- Error during Shodan scan. Please check the logs for more details.'
+                            logging.error(f"Shodan scan error: {scan_status.get('error')}")
+                            break  # Exit the loop on error
+                        # Handle other statuses if needed
                     else:
-                        info.append(f"- {link}")
-                print("[INFO] Sent open ports.")
+                        current_message += '\n- Failed to fetch Shodan scan status. Retrying...'
+                    await status_message.edit(content=current_message)
+                    if not scan_completed:
+                        await asyncio.sleep(30)  # Use asyncio.sleep() for async code
             else:
+                current_message += '\n- Failed to initiate Shodan scan. Probably out of credits.\n- Proceeding with historical lookup.'
+                await status_message.edit(content=current_message)
+
+
+            # Fetch updated host information from Shodan after the scan
+            shodan_data = await client.fetch_shodan_host_info(ip)
+
+            if shodan_data:  
+                general_info_exclusions = ['data', 'ports']
+                for key, value in shodan_data.items():
+                    if key not in general_info_exclusions:
+                        if isinstance(value, list):
+                            value = ', '.join(map(str, value))
+                        info.append(f"**{key.capitalize()}**: {value}")
+
+                # Display detailed service information from 'data' array
+                if 'data' in shodan_data and shodan_data['data']:
+                    info.append(f"\nFound {len(shodan_data['data'])} services for IP {ip} on Shodan:")
+                    
+                    for service in shodan_data.get('data', []):
+                        cleaned_banner = clean_service_banner(service.get('data', 'No banner information'))
+                        service_info = []
+
+                        port = service.get('port', 'N/A')
+                        product = service.get('product', 'N/A') or 'N/A'  # Ensures 'N/A' if None
+                        version = service.get('version', '') or ''  # Ensures empty string if None
+                        service_name = f"{product} {version}".strip()
+                        os = service.get('os', 'N/A') or 'N/A'  # Ensures 'N/A' if None
+                        location = f"{service.get('location', {}).get('city', 'Unknown city')}, {service.get('location', {}).get('country_name', 'Unknown country')}"
+                        ssl_info = service.get('ssl', {}).get('version', 'No SSL') or 'No SSL'  # Ensures 'No SSL' if None
+
+                        # Constructing detailed service information
+                        service_info.append(f"Port: {port}")
+                        service_info.append(f"Service: {service_name if service_name else 'N/A'}")
+                        service_info.append(f"Banner: {cleaned_banner}")
+                        if os:
+                            service_info.append(f"OS: {os}")
+                        if ssl_info != 'No SSL':
+                            service_info.append(f"SSL Version: {ssl_info}")
+                        service_info.append(f"Location: {location}")
+
+                        # Join service_info list into a single string and add to info
+                        info.append('\n'.join(service_info))
+
+                        # Add detailed port information to open_ports for the summary section
+                        open_ports.append({
+                            "link": f"{ip}:{port}",
+                            "summary": f"Service: {service_name if service_name else 'N/A'}, Product: {product}, OS: {os}, SSL: {ssl_info}, Location: {location}"
+                        })
+
+                else:
+                    info.append(f"No service data found for IP {ip} on Shodan.")
+            else:
+                print("[INFO] No data found for IP {ip} on Shodan.")
+                info.append(f"No Shodan data available for IP {ip}.")
+                current_message += '\n- No Shodan data available for IP.'
+                await status_message.edit(content=current_message)
+                
+            print("[INFO] Completed Shodan IP data scan.")
+            current_message += '\n- Shodan information retrieval completed successfully.'
+            await status_message.edit(content=current_message)
+
+        except Exception as e:
+            info.append(f"Error fetching data from Shodan: {e}")
+            print(f"[ERROR] Error fetching data from Shodan: {e}")
+
+
+        # Tor Exit Node Check
+        info.append('\n**## TOR Exit Node Check**')
+        try:
+            exit_nodes = await client.get_tor_exit_nodes()
+            is_tor = ip in exit_nodes
+            info.append(f"Tor exit node: {'Yes' if is_tor else 'No'}")
+            print("[INFO] TOR check completed.")
+            current_message += '\n- TOR check completed.'
+            await status_message.edit(content=current_message)
+
+        except Exception as e:
+            print(f"Error checking for Tor exit node: {e}") 
+            info.append("Error checking for Tor exit node.") 
+            print(f"[ERROR] ...: {e}")
+
+        # Whois lookup
+        info.append('\n**## Whois Lookup**')
+        try:
+            loop = asyncio.get_event_loop()
+            whois_data = await loop.run_in_executor(None, whois.whois, ip)
+            if whois_data:
+                whois_info = ["Whois data for " + ip + ":"]
+                for key, value in whois_data.items():
+                    if value and not isinstance(value, (list, dict)):
+                        whois_info.append(f"   {key.capitalize()}: {value}")
+                    elif isinstance(value, list):
+                        # If the value is a list (e.g. multiple name servers), concatenate them
+                        whois_info.append(f"   {key.capitalize()}: {', '.join(map(str, value))}")
+                info.extend(whois_info)
+                print("[INFO] WHOIS check completed.")
+                current_message += '\n- WHOIS check completed.'
+                await status_message.edit(content=current_message)
+            else:
+                info.append(f"No Whois data found for {ip}.")
+                print(f"No Whois data found for {ip}.")
+        except Exception as e:
+            info.append(f"Whois lookup error for {ip}: {e}")
+            print(f"[ERROR] ...: {e}")
+
+        # # High-risk or interesting ports for clickable links or security risks
+        # high_risk_ports = '80,443,554,8554'  # Example: HTTP, HTTPS, RTSP for IP cameras
+
+        # # Fetch open ports from Shodan
+        # if shodan_data and 'ports' in shodan_data and shodan_data['ports']:
+        #     ports_to_scan = ','.join(map(str, shodan_data['ports']))
+        # else:
+        #     # No Shodan data or no ports in Shodan data, use predefined high-risk ports
+        #     ports_to_scan = high_risk_ports
+        #     info.append(f"No ports data found for IP {ip} on Shodan.")
+
+        # # Perform the NMAP scan using either Shodan-provided ports or fallback to high-risk ports
+        # print("[INFO] NMAP port scan starting. Please wait...")
+        # info.append('\n**## NMAP Data**')
+        # nm = nmap.PortScanner()
+        # try:
+        #     service_name = "Unknown Service"
+        #     product = "Unknown Product"
+        #     os = "Unknown OS"
+        #     ssl_info = "No SSL Info"
+        #     location = "Unknown Location"
+        #     nmap_result, nmap_error = await client.async_nmap_scan(nm, ip, ports_to_scan, arguments='-A -T4')
+        #     if nmap_error:
+        #         info.append(f"NMAP Data\n\nError during Nmap scanning: {nmap_error}")
+        #     else:
+        #         if nmap_result is None:
+        #             info.append("\n**## NMAP Data**")
+        #             info.append("Error during Nmap scanning: Unable to complete the scan. Please check the server logs for details.")
+        #         else:
+        #             for proto in nm[ip].all_protocols():
+        #                 lport = nm[ip][proto].keys()
+        #                 for port in lport:
+        #                     service_info = nm[ip][proto][port]
+        #                     service_desc = f"{service_info.get('name', 'unknown service')} {service_info.get('product', '')} {service_info.get('version', '')} {service_info.get('extrainfo', '')}".strip()
+        #                     port_info = f"**Port {port}/tcp** - {service_desc} is **{service_info['state']}**"
+        #                     info.append(port_info)
+        #                     # Keep track of open ports for the summary
+        #                     open_ports.append({
+        #                         "link": f"{ip}:{port}",
+        #                         "summary": f"Service: {service_name if service_name else 'N/A'}, Product: {product if product and product != 'N/A' else ''}, OS: {os}, SSL: {ssl_info}, Location: {location}"
+        #                     })
+
+        # except Exception as e:
+        #     info.append(f"Error during Nmap scanning: {str(e)}")
+
+        # print("[INFO] NMAP scan completed.")
+
+
+        # current_message += '\n- NMAP scan completed.'
+        # await status_message.edit(content=current_message)
+
+
+        # # Check for common services
+        # service_links = []
+
+        # ports_and_services = {
+        #     20: ("FTP Data Transfer", "ftp"),
+        #     21: ("FTP Control", "ftp"),
+        #     53: ("DNS", "dns"),
+        #     67: ("DHCP Server", "dhcp"),
+        #     68: ("DHCP Client", "dhcp"),
+        #     80: ("HTTP", "http"),
+        #     123: ("NTP", "ntp"),
+        #     389: ("LDAP", "ldap"),
+        #     443: ("HTTPS", "https"),
+        #     636: ("LDAPS", "ldaps"),
+        #     1194: ("OpenVPN", "openvpn"),
+        #     1723: ("PPTP VPN", "pptp"),
+        #     1812: ("RADIUS Authentication", "radius"),
+        #     1813: ("RADIUS Accounting", "radius"),
+        #     1883: ("MQTT (non-SSL)", "mqtt"),
+        #     8883: ("MQTT (SSL)", "mqtts"),
+        #     2049: ("NFS", "nfs"),
+        #     3260: ("iSCSI", "iscsi"),
+        #     3268: ("Microsoft Global Catalog", "gc"),
+        #     5060: ("SIP Non-encrypted", "sip"),
+        #     5061: ("SIP Encrypted (TLS)", "sips"),
+        #     5000: ("UPnP", "upnp"),
+        #     11211: ("Memcached", "memcached"),
+        #     27015: ("Online Gaming (e.g., Valve's Source Engine)", "game"),
+        #     9418: ("Git", "git"),
+        #     10000: ("Webmin", "webmin"),
+        #     # IP Cameras
+        #     554: ("RTSP for IP cameras", "rtsp"),
+        #     8554: ("RTSP alternate", "rtsp"),
+        #     37777: ("Dahua DVR", "dahua"),
+        #     86: ("Wyze Camera", "http"),
+        #     888: ("WebcamXP", "http"),
+        #     8080: ("WebcamXP 5", "http"),
+        #     10001: ("Yawcam", "http"),
+        #     17500: ("Dropcam", "http"),
+        #     34567: ("Hikvision DVR", "hikvision"),
+        #     5050: ("Mobotix IP Camera", "mobotix"),
+        #     5800: ("Vivotek Cameras", "vivotek"),
+        #     8090: ("Apix Cameras", "http"),
+        #     # Printers
+        #     515: ("Line Printer Daemon (LPD)", "lpd"),
+        #     631: ("Internet Printing Protocol (IPP)", "ipp"),
+        #     9100: ("Raw printing (JetDirect, AppSocket, PDL-datastream)", "jetdirect"),
+        #     # Game Servers
+        #     25565: ("Minecraft", "minecraft"),
+        #     27017: ("MongoDB", "mongodb")
+        # }
+
+        # # Generate service links based on detected open ports
+        # default_label = "Unknown Service"
+        # default_protocol = "unknown"
+
+        # for port, values in ports_and_services.items():
+        #     label = values[0] if len(values) > 0 and values[0] else default_label
+        #     protocol = values[1] if len(values) > 1 and values[1] else default_protocol
+            
+        #     # Append the port to the URL if it's not a standard port for the given protocol
+        #     port_str = f":{port}" if (protocol != "http" or port != 80) and (protocol != "https" or port != 443) else ""
+
+        #     if port in open_ports:
+        #         service_links.append(f"[{label}]({protocol}://{ip}{port_str})")
+
+        # VirusTotal
+        info.append('\n**## VirusTotal Analysis**')
+        try:
+            processed_data = await client.get_virustotal_data(ip)
+
+            # Extracting IP Info
+            ip_info = processed_data.get("ip_info", {})
+            if ip_info:
+                info.append("**IP Info:**")
+                for key, value in ip_info.items():
+                    if key == "last_analysis_results":
+                        continue  
+                    if isinstance(value, dict):
+                        value = ', '.join(f"{k}: {v}" for k, v in value.items())
+                    info.append(f"{key.capitalize()}: {value}")
+
+            # Extracting WHOIS data
+            info.append('**----------------------------------**')
+            info.append('**Historical WHOIS Data**')
+            info.append('**----------------------------------**')
+            whois_info = processed_data.get("whois_info", [])
+            if whois_info:
+                for entry in whois_info:
+                    attributes = entry.get("attributes", {})
+                    for key, value in attributes.items():
+                        if isinstance(value, dict):  # If the value is another dictionary
+                            nested_info = [f"\t{k.capitalize()}: {v}" for k, v in value.items()]
+                            info.append(f"{key.capitalize()}:")
+                            info.extend(nested_info)
+                        else:
+                            info.append(f"{key.capitalize()}: {value}")
+
+            # Extracting URLs data
+            urls_info = processed_data.get("urls_info", [])
+            if urls_info:
                 info.append('**----------------------------------**')
-                info.append("No detected open services.")
+                info.append("**URLs associated:**")
                 info.append('**----------------------------------**')
+                for entry in urls_info:
+                    for key, value in entry.get("attributes", {}).items():
+                        info.append(f"{key.capitalize()}: {value}")
 
-            # Create response_message from info
-            response_message = "\n".join(info)
+            # Extracting Comments data
+            comments_info = processed_data.get("comments_info", [])
+            if comments_info:
+                info.append('**----------------------------------**')
+                info.append("**Community Comments:**")
+                info.append('**----------------------------------**')
+                for comment in comments_info:
+                    for key, value in comment.items():
+                        info.append(f"{key.capitalize()}: {value}")
 
-            # Suppress URL previews by wrapping URLs with <>
-            response_message = re.sub(r'(?<!<)(http[s]?://\S+)(?!\>)', r'<\1>', response_message)
+            # Extracting Last Analysis Results 
+            last_analysis = processed_data.get("last_analysis_results", {})
+            if last_analysis:
+                info.append('**----------------------------------**')
+                info.append("**Last Analysis Results:**")
+                info.append('**----------------------------------**')
+                for engine, details in last_analysis.items():
+                    engine_name = details.get('engine_name', 'Unknown Engine')
+                    category = details.get('category', 'Unknown Category')
+                    result = details.get('result', 'Unknown Result')
+                    info.append(f"{engine_name} - Category: {category}, Result: {result}")
 
-            info.append(f'\n## End of report on {ip}')
-            print(f"[INFO] End of report on {ip}")
+            print("[INFO] Virustotal scan completed.")
+            current_message += '\n- Virustotal scan completed.'
+            print (info)
+            await status_message.edit(content=current_message)
 
-            await client.send_split_messages(interaction, response_message)
-            print("[INFO] Initial Discord response sent.")
 
-        client.run(token)
+        except Exception as e:
+            print(f"VirusTotal API Error: {e}")
 
-    if __name__ == "__main__":
-        config = load_config()
-        if check_configurations(config):
-            run_discord_bot(config.get("TOKEN"), config.get("SHODAN_KEY"), config.get("VIRUSTOTAL_API_KEY"))
+        # Summary
+
+        # Geolocation Information
+        info.append('\n**## Summary and Geolocation**\n')
+
+        # Fetch additional data from Shodan for a thorough summary
+        if shodan_data:
+            # Hostnames and Domains
+            hostnames = shodan_data.get('hostnames', [])
+            domains = shodan_data.get('domains', [])
+            if hostnames:
+                info.append("**Hostnames:**")
+                info.extend([f"- {hostname}" for hostname in hostnames])
+            if domains:
+                info.append("**Domains:**")
+                info.extend([f"- {domain}" for domain in domains])
+
+            # Organization and ISP
+            org = shodan_data.get('org', 'Unknown')
+            isp = shodan_data.get('isp', 'Unknown')
+            info.append(f"**Organization:** {org}")
+            info.append(f"**ISP:** {isp}")
+
+            # Operating System
+            os = shodan_data.get('os', 'Not Detected')
+            info.append(f"**Operating System:** {os}")
+
+            # Vulnerabilities (if any)
+            vulns = shodan_data.get('vulns', [])
+            if vulns:
+                info.append("**Detected Vulnerabilities:**")
+                info.extend([f"- CVE-{vuln}" for vuln in vulns])
+
+        # Geolocation Information
+        try:
+            geolocation_data = await client.get_geolocation(ip)
+            location = f"{geolocation_data.get('city', 'Unknown')}, {geolocation_data.get('region', 'Unknown')}, {geolocation_data.get('country', 'Unknown')}"
+            google_maps_link = f"https://www.google.com/maps/search/?api=1&query={geolocation_data.get('loc', '0,0')}"
+
+            info.append(f"**Location:** {location}")
+            info.append(f"**Postal Code:** {geolocation_data.get('postal', 'Unknown')}")
+            info.append(f"**Timezone:** {geolocation_data.get('timezone', 'Unknown')}")
+            info.append(f"**[View on Google Maps]({google_maps_link})**")
+        except Exception as e:
+            info.append(f"Error fetching geolocation data: {e}")
+
+        # Open Services Summary
+
+        info.append("\n**## Possible Open Services:**")
+        if open_ports:
+            for port_info in open_ports:
+                # Create a clickable link for the IP:Port
+                info.append(f"- [{port_info['link']}](http://{port_info['link']})")
+                # Append the summary below the clickable link, ensuring consistency with the detailed information
+                summary = port_info['summary']
+                info.append(f"    {summary}")
+        else:
+            info.append("No detected open services.")
+            
+        # Create response_message from info
+        response_message = "\n".join(info)
+        response_message = re.sub(r'(?<!<)(http[s]?://\S+)(?!\>)', r'<\1>', response_message)  # Suppress URL previews
+        response_message += f'\n## End of report on {ip}'
+        await client.send_split_messages(interaction, response_message)
+
+        screenshot_data = None
+        if shodan_data:
+            for service in shodan_data.get('data', []):
+                if 'screenshot' in service and 'data' in service['screenshot']:
+                    screenshot_data = service['screenshot']['data']
+                    break  # Assuming only one screenshot is sufficient
+
+        if screenshot_data:
+            try:
+                screenshot_bytes = base64.b64decode(screenshot_data)
+                screenshot_file = BytesIO(screenshot_bytes)
+                screenshot_file.name = 'screenshot.png'  # Discord requires a filename
+                await interaction.followup.send("Screenshot found!", file=discord.File(screenshot_file, 'screenshot.png'))
+            except Exception as e:
+                logging.error(f"Error handling screenshot data: {e}")
+
+        print("[INFO] Initial Discord response sent.")
+
+
+    client.run(token)
+
+if __name__ == "__main__":
+    config = load_config()
+    if check_configurations(config):
+        run_discord_bot(config.get("TOKEN"), config.get("SHODAN_KEY"), config.get("VIRUSTOTAL_API_KEY"))
