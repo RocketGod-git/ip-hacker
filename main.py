@@ -735,54 +735,61 @@ def run_discord_bot(token, shodan_api_key, virustotal_api_key):
                 info.append("**Detected Vulnerabilities:**")
                 info.extend([f"- CVE-{vuln}" for vuln in vulns])
 
-        # Geolocation Information
-        try:
+            # Send the main report
+            response_message = "\n".join(info)
+            response_message = re.sub(r'(?<!<)(http[s]?://\S+)(?!\>)', r'<\1>', response_message)  # Suppress URL previews
+            response_message += f'\n## End of report on {ip}'
+            await client.send_split_messages(interaction, response_message)
+
+            # Fetch geolocation data
             geolocation_data = await client.get_geolocation(ip)
+
+            # Geolocation Information Embed
+            geolocation_embed = discord.Embed(title=f"Geolocation for {ip}", color=0x3498db)
             location = f"{geolocation_data.get('city', 'Unknown')}, {geolocation_data.get('region', 'Unknown')}, {geolocation_data.get('country', 'Unknown')}"
-            google_maps_link = f"https://www.google.com/maps/search/?api=1&query={geolocation_data.get('loc', '0,0')}"
+            google_maps_link = f"[View on Google Maps](https://www.google.com/maps/search/?api=1&query={geolocation_data.get('loc', '0,0')})"
+            geolocation_embed.add_field(name="Location", value=location, inline=False)
+            geolocation_embed.add_field(name="Postal Code", value=geolocation_data.get('postal', 'Unknown'), inline=True)
+            geolocation_embed.add_field(name="Timezone", value=geolocation_data.get('timezone', 'Unknown'), inline=True)
+            geolocation_embed.add_field(name="Google Maps", value=google_maps_link, inline=False)
+            await interaction.followup.send(embed=geolocation_embed)
 
-            info.append(f"**Location:** {location}")
-            info.append(f"**Postal Code:** {geolocation_data.get('postal', 'Unknown')}")
-            info.append(f"**Timezone:** {geolocation_data.get('timezone', 'Unknown')}")
-            info.append(f"**[View on Google Maps]({google_maps_link})**")
-        except Exception as e:
-            info.append(f"Error fetching geolocation data: {e}")
+            # Possible Open Services Embed
+            services_embed = discord.Embed(title="Possible Open Services", color=0x3498db)
+            if open_ports:
+                for port_info in open_ports:
+                    # Assuming 'link' is formatted as 'ip:port'
+                    link = port_info.get('link', '')
+                    port = link.split(':')[-1] if ':' in link else 'N/A'  # Extract port from 'link'
 
-        # Open Services Summary
+                    summary = port_info.get('summary', 'No summary available')
+                    # Format the value field to include the link and summary
+                    value_field = f"[{link}](http://{link})\n{summary}"
 
-        info.append("\n**## Possible Open Services:**")
-        if open_ports:
-            for port_info in open_ports:
-                # Create a clickable link for the IP:Port
-                info.append(f"- [{port_info['link']}](http://{port_info['link']})")
-                # Append the summary below the clickable link, ensuring consistency with the detailed information
-                summary = port_info['summary']
-                info.append(f"    {summary}")
-        else:
-            info.append("No detected open services.")
-            
-        # Create response_message from info
-        response_message = "\n".join(info)
-        response_message = re.sub(r'(?<!<)(http[s]?://\S+)(?!\>)', r'<\1>', response_message)  # Suppress URL previews
-        response_message += f'\n## End of report on {ip}'
-        await client.send_split_messages(interaction, response_message)
+                    services_embed.add_field(name=f"Port {port}", value=value_field, inline=False)
+            else:
+                services_embed.add_field(name="Status", value="No detected open services.", inline=False)
 
-        screenshot_data = None
-        if shodan_data:
-            for service in shodan_data.get('data', []):
-                if 'screenshot' in service and 'data' in service['screenshot']:
-                    screenshot_data = service['screenshot']['data']
-                    break  # Assuming only one screenshot is sufficient
+            await interaction.followup.send(embed=services_embed)
 
-        if screenshot_data:
-            try:
-                screenshot_bytes = base64.b64decode(screenshot_data)
-                screenshot_file = BytesIO(screenshot_bytes)
-                screenshot_file.name = 'screenshot.png'  # Discord requires a filename
-                await interaction.followup.send("Screenshot found!", file=discord.File(screenshot_file, 'screenshot.png'))
-            except Exception as e:
-                logging.error(f"Error handling screenshot data: {e}")
+            # Handle Screenshot Data
+            screenshot_data = None             
 
+            if shodan_data:
+                for service in shodan_data.get('data', []):
+                    if 'screenshot' in service and 'data' in service['screenshot']:
+                        screenshot_data = service['screenshot']['data']
+                        break  # Assuming only one screenshot is sufficient
+
+            if screenshot_data:
+                try:
+                    screenshot_bytes = base64.b64decode(screenshot_data)
+                    screenshot_file = BytesIO(screenshot_bytes)
+                    screenshot_file.name = 'screenshot.png'  # Discord requires a filename
+                    await interaction.followup.send("Screenshot found!", file=discord.File(screenshot_file, 'screenshot.png'))
+                except Exception as e:
+                    logging.error(f"Error handling screenshot data: {e}")
+                    
         print("[INFO] Initial Discord response sent.")
 
 
