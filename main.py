@@ -378,7 +378,7 @@ def run_discord_bot(token, shodan_api_key, virustotal_api_key):
         
         await interaction.response.defer(ephemeral=False)
         status_message = await interaction.followup.send(f'Scanning and analyzing {ip}.\n')
-        current_message = f'Scanning and analyzing {ip} for {interaction.user.name}.\n' 
+        current_message = f'Scanning and analyzing `{ip}` for `{interaction.user.name}`.\n' 
         print(f"[INFO] Processing: {ip} for {interaction.user.name} at {interaction.guild}")
         
         shodan_data = None
@@ -805,7 +805,7 @@ def run_discord_bot(token, shodan_api_key, virustotal_api_key):
 #            print("[DEBUG] No screenshot data found.")
 
 #        print("[INFO] Discord response sent.")
-        await interaction.channel.send(f"## Finished searching {ip} for {interaction.user.name}")
+        await interaction.channel.send(f"## Finished searching `{ip}` for `{interaction.user.name}`")
 
     client.run(token)
 
