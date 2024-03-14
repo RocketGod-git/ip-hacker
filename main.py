@@ -32,7 +32,9 @@ executor = ThreadPoolExecutor()
 last_analysis_date = datetime.utcfromtimestamp(1695418944).strftime('%Y-%m-%d %H:%M:%S UTC')
 whois_date = datetime.utcfromtimestamp(1614909309).strftime('%Y-%m-%d %H:%M:%S UTC')
 
-logging.basicConfig(level=logging.INFO)
+handler = logging.StreamHandler()
+handler.addFilter(lambda record: 'Shard ID None has successfully RESUMED session' not in record.getMessage())
+logging.basicConfig(handlers=[handler], level=logging.INFO, format='[%(asctime)s] [%(levelname)s] %(name)s: %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
 
 def load_config():
     with open('config.json', 'r') as file:
@@ -260,13 +262,13 @@ class AClient(discord.Client):
         if require_response and not interaction.response.is_done():
             await interaction.response.defer(ephemeral=False)
 
-        print("[DEBUG] Sending split messages to Discord...")
+#        print("[DEBUG] Sending split messages to Discord...")
 
         # Edit the deferred response
         try:
-            print(f"[DEBUG] Sending chunk 1/{len(chunks)} to Discord...")
+#            print(f"[DEBUG] Sending chunk 1/{len(chunks)} to Discord...")
             await interaction.followup.send(content=chunks[0], ephemeral=False)
-            print(f"[DEBUG] Chunk 1/{len(chunks)} sent to Discord.")
+#            print(f"[DEBUG] Chunk 1/{len(chunks)} sent to Discord.")
             chunks = chunks[1:]  # Remove the first chunk since we've already sent it
         except Exception as e:
             logging.error(f"Failed to send the first chunk via followup. Error: {e}")
@@ -274,13 +276,13 @@ class AClient(discord.Client):
         # Send the rest of the chunks directly to the channel
         for i, chunk in enumerate(chunks, start=2):  # Start the index at 2 since we've already sent the first chunk
             try:
-                print(f"[DEBUG] Sending chunk {i}/{len(chunks)+1} to Discord...")
+#                print(f"[DEBUG] Sending chunk {i}/{len(chunks)+1} to Discord...")
                 await interaction.channel.send(chunk)
-                print(f"[DEBUG] Chunk {i}/{len(chunks)+1} sent to Discord.")
+#                print(f"[DEBUG] Chunk {i}/{len(chunks)+1} sent to Discord.")
             except Exception as e:
                 logging.error(f"Failed to send a message chunk to the channel. Error: {e}")
 
-        print("[DEBUG] Split messages sent to Discord.")
+#        print("[DEBUG] Split messages sent to Discord.")
 
 
     async def handle_errors(self, interaction, error, error_type="Error", base_url=None, ip=None, headers=None):
@@ -376,8 +378,8 @@ def run_discord_bot(token, shodan_api_key, virustotal_api_key):
         
         await interaction.response.defer(ephemeral=False)
         status_message = await interaction.followup.send(f'Scanning and analyzing {ip}.\n')
-        current_message = f'Scanning and analyzing {ip}.\n' 
-        print(f"[INFO] Received IP lookup request for: {ip}")
+        current_message = f'Scanning and analyzing {ip} for {interaction.user.name}.\n' 
+        print(f"[INFO] Processing: {ip} for {interaction.user.name} at {interaction.guild}")
         
         shodan_data = None
 
@@ -401,7 +403,7 @@ def run_discord_bot(token, shodan_api_key, virustotal_api_key):
         info.append('**----------------------------------**')
             
         # Shodan Analysis
-        print("[DEBUG] Starting Shodan analysis...")
+#        print("[DEBUG] Starting Shodan analysis...")
         info.append('\n**## Shodan Analysis**')
         try:
             current_message += '\n- Initiating Shodan scan for current open ports.'
@@ -485,25 +487,25 @@ def run_discord_bot(token, shodan_api_key, virustotal_api_key):
 
             current_message += '\n- Shodan information retrieval completed.'
             await status_message.edit(content=current_message)
-            print("[INFO] Completed Shodan IP data scan.")
-            print("[DEBUG] Shodan Analysis (after completion):")
-            print("[DEBUG] info:", info)
+#            print("[INFO] Completed Shodan IP data scan.")
+#            print("[DEBUG] Shodan Analysis (after completion):")
+#            print("[DEBUG] info:", info)
 
         except Exception as e:
             info.append(f"Error fetching data from Shodan: {e}")
             print(f"[ERROR] Error fetching data from Shodan: {e}")
 
         # Tor Exit Node Check
-        print("[DEBUG] Starting TOR exit node check...")
+#        print("[DEBUG] Starting TOR exit node check...")
         info.append('\n**## TOR Exit Node Check**')
         try:
             exit_nodes = await client.get_tor_exit_nodes()
             is_tor = ip in exit_nodes
             info.append(f"Tor exit node: {'Yes' if is_tor else 'No'}")
-            print("[INFO] TOR check completed.")
+#            print("[INFO] TOR check completed.")
             current_message += '\n- TOR check completed.'
             await status_message.edit(content=current_message)
-            print("[DEBUG] TOR exit node check completed.")
+#            print("[DEBUG] TOR exit node check completed.")
 
         except Exception as e:
             print(f"Error checking for Tor exit node: {e}") 
@@ -511,7 +513,7 @@ def run_discord_bot(token, shodan_api_key, virustotal_api_key):
             print(f"[ERROR] ...: {e}")
 
         # Whois lookup
-        print("[DEBUG] Starting Whois Lookup...")
+#        print("[DEBUG] Starting Whois Lookup...")
         info.append('\n**## Whois Lookup**')
         try:
             loop = asyncio.get_event_loop()
@@ -525,7 +527,7 @@ def run_discord_bot(token, shodan_api_key, virustotal_api_key):
                         # If the value is a list (e.g. multiple name servers), concatenate them
                         whois_info.append(f"   {key.capitalize()}: {', '.join(map(str, value))}")
                 info.extend(whois_info)
-                print("[INFO] WHOIS check completed.")
+#                print("[INFO] WHOIS check completed.")
                 current_message += '\n- WHOIS check completed.'
                 await status_message.edit(content=current_message)
 
@@ -652,7 +654,7 @@ def run_discord_bot(token, shodan_api_key, virustotal_api_key):
         #         service_links.append(f"[{label}]({protocol}://{ip}{port_str})")
 
         # VirusTotal
-        print("[DEBUG] Starting VirusTotal Analasis...")
+#        print("[DEBUG] Starting VirusTotal Analasis...")
         info.append('\n**## VirusTotal Analysis**')
         try:
             processed_data = await client.get_virustotal_data(ip)
@@ -716,9 +718,9 @@ def run_discord_bot(token, shodan_api_key, virustotal_api_key):
                     result = details.get('result', 'Unknown Result')
                     info.append(f"{engine_name} - Category: {category}, Result: {result}")
 
-            print("[INFO] Virustotal scan completed.")
+#            print("[INFO] Virustotal scan completed.")
             current_message += '\n- Virustotal scan completed.'
-            print (info)
+#            print (info)
             await status_message.edit(content=current_message)
 
 
@@ -729,25 +731,27 @@ def run_discord_bot(token, shodan_api_key, virustotal_api_key):
         # Check if any significant data was found across all sources
         if len(info) <= 10:
             final_message = f"No significant data found for IP {ip} across all sources."
-            print("[DEBUG] No significant data found. Sending message...")
+#            print("[DEBUG] No significant data found. Sending message...")
             await interaction.followup.send(final_message)
-            print("[DEBUG] Message sent.")
+#            print("[DEBUG] Message sent.")
         else:
             # Compile and send the full report
-            print("[DEBUG] Significant data found. Compiling full report...")
+#            print("[DEBUG] Significant data found. Compiling full report...")
             response_message = "\n".join(info)
             response_message = re.sub(r'(?<!<)(http[s]?://\S+)(?!\>)', r'<\1>', response_message)  # Suppress URL previews
-            response_message += f'\n## End of report on {ip}'
-            print("[DEBUG] Full report compiled. Sending split messages to Discord...")
+            response_message += f'\n## End of report data on {ip} - creating embeds and images if available now...'
+ #           print("[DEBUG] Full report compiled. Sending split messages to Discord...")
             await client.send_split_messages(interaction, response_message)
-            print("[DEBUG] Split messages sent to Discord.")
+#            print("[DEBUG] Split messages sent to Discord.")
+
+        # Start embeds after report
 
             # Fetch geolocation data
             geolocation_data = await client.get_geolocation(ip)
 
             # Geolocation Information Embed
             if geolocation_data:
-                print("[DEBUG] Creating geolocation embed...")
+ #               print("[DEBUG] Creating geolocation embed...")
                 geolocation_embed = discord.Embed(title=f"Geolocation for {ip}", color=0x3498db)
                 location = f"{geolocation_data.get('city', 'Unknown')}, {geolocation_data.get('region', 'Unknown')}, {geolocation_data.get('country', 'Unknown')}"
                 google_maps_link = f"[View on Google Maps](https://www.google.com/maps/search/?api=1&query={geolocation_data.get('loc', '0,0')})"
@@ -755,15 +759,15 @@ def run_discord_bot(token, shodan_api_key, virustotal_api_key):
                 geolocation_embed.add_field(name="Postal Code", value=geolocation_data.get('postal', 'Unknown'), inline=True)
                 geolocation_embed.add_field(name="Timezone", value=geolocation_data.get('timezone', 'Unknown'), inline=True)
                 geolocation_embed.add_field(name="Google Maps", value=google_maps_link, inline=False)
-                print("[DEBUG] Sending geolocation embed...")
+#                print("[DEBUG] Sending geolocation embed...")
                 await interaction.followup.send(embed=geolocation_embed)
-                print("[DEBUG] Geolocation embed sent.")
+#                print("[DEBUG] Geolocation embed sent.")
             else:
-                print("[DEBUG] No geolocation data found.")
+#                print("[DEBUG] No geolocation data found.")
                 await interaction.followup.send("No geolocation data available for the provided IP address.")
                 
         # Possible Open Services Embed
-        print("[DEBUG] Creating open services embed...")
+#        print("[DEBUG] Creating open services embed...")
         services_embed = discord.Embed(title="Possible Open Services", color=0x3498db)
         if open_ports:
             for port_info in open_ports:
@@ -775,9 +779,9 @@ def run_discord_bot(token, shodan_api_key, virustotal_api_key):
         else:
             services_embed.add_field(name="Status", value="No detected open services.", inline=False)
 
-        print("[DEBUG] Sending open services embed...")
+#        print("[DEBUG] Sending open services embed...")
         await interaction.followup.send(embed=services_embed) 
-        print("[DEBUG] Open services embed sent.")
+#        print("[DEBUG] Open services embed sent.")
 
         # Handle Screenshot Data
         screenshot_data = None             
@@ -789,19 +793,19 @@ def run_discord_bot(token, shodan_api_key, virustotal_api_key):
 
         if screenshot_data:
             try:
-                print("[DEBUG] Screenshot data found. Sending screenshot...")
+#                print("[DEBUG] Screenshot data found. Sending screenshot...")
                 screenshot_bytes = base64.b64decode(screenshot_data)
                 screenshot_file = BytesIO(screenshot_bytes)
                 screenshot_file.name = 'screenshot.png'
                 await interaction.followup.send("Screenshot found!", file=discord.File(screenshot_file, 'screenshot.png'))
-                print("[DEBUG] Screenshot sent.")
+#                print("[DEBUG] Screenshot sent.")
             except Exception as e:
                 logging.error(f"Error handling screenshot data: {e}")
-        else:
-            print("[DEBUG] No screenshot data found.")
+#        else:
+#            print("[DEBUG] No screenshot data found.")
 
-        print("[INFO] Discord response sent.")
-
+#        print("[INFO] Discord response sent.")
+        await interaction.channel.send(f"## Finished searching {ip} for {interaction.user.name}")
 
     client.run(token)
 
